@@ -17,10 +17,9 @@ var _ crypto.Signer = (*Signer)(nil)
 // Signer is a crypto.Signer that uses a AWS KMS backed key. It should be
 // initialized via NewSigner
 type Signer struct {
-	kms       kmsiface.KMSAPI
-	keyID     string
-	public    crypto.PublicKey
-	preferPSS bool
+	kms    kmsiface.KMSAPI
+	keyID  string
+	public crypto.PublicKey
 	// hashm maps the given crypto.hash to the alg for the KMS side. it will
 	// depend on the key type
 	hashm map[crypto.Hash]string
