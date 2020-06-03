@@ -10,8 +10,8 @@ build:
 test:
 	go test -v ./...
 
-lint: $(gopath)/bin/gobin
-	$(gopath)/bin/gobin -m -run github.com/golangci/golangci-lint/cmd/golangci-lint run ./...
+lint: bin/golangci-lint-1.23.8
+	./bin/golangci-lint-1.23.8 run ./...
 
-$(gopath)/bin/gobin:
-	(cd /tmp && GO111MODULE=on go get -u github.com/myitcv/gobin@latest)
+bin/golangci-lint-1.23.8:
+	./hack/fetch-golangci-lint.sh
