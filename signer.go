@@ -17,9 +17,10 @@ var _ crypto.Signer = (*Signer)(nil)
 // Signer is a crypto.Signer that uses a AWS KMS backed key. It should be
 // initialized via NewSigner
 type Signer struct {
-	kms    kmsiface.KMSAPI
-	keyID  string
-	public crypto.PublicKey
+	kms         kmsiface.KMSAPI
+	keyID       string
+	keyMetadata *kms.KeyMetadata
+	public      crypto.PublicKey
 	// hashm maps the given crypto.hash to the alg for the KMS side. it will
 	// depend on the key type
 	hashm map[crypto.Hash]string
@@ -48,9 +49,10 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 	}
 
 	s := &Signer{
-		kms:    kmssvc,
-		keyID:  keyID,
-		public: pub,
+		kms:         kmssvc,
+		keyID:       keyID,
+		keyMetadata: ki.KeyMetadata,
+		public:      pub,
 	}
 
 	if err := s.setSigningHashes(ki.KeyMetadata); err != nil {
@@ -58,6 +60,11 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 	}
 
 	return s, nil
+}
+
+// KeyID returns the resource ID of the AWS KMS key.
+func (s *Signer) KeyID() string {
+	return *s.keyMetadata.KeyId
 }
 
 // Public returns the public key corresponding to the opaque,
