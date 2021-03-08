@@ -20,7 +20,11 @@ func getPublicKey(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (cr
 		return nil, fmt.Errorf("failed to fetch public key for %s: %w", keyID, err)
 	}
 
-	pubk, err := x509.ParsePKIXPublicKey(pkresp.PublicKey)
+	return parsePublicKey(pkresp.PublicKey)
+}
+
+func parsePublicKey(publicKey []byte) (crypto.PublicKey, error) {
+	pubk, err := x509.ParsePKIXPublicKey(publicKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse public key: %w", err)
 	}
