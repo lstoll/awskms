@@ -19,7 +19,7 @@ var _ crypto.Signer = (*Signer)(nil)
 type Signer struct {
 	kms         kmsiface.KMSAPI
 	keyID       string
-	keyMetadata *kms.KeyMetadata
+	targetKeyID string
 	public      crypto.PublicKey
 	// hashm maps the given crypto.hash to the alg for the KMS side. it will
 	// depend on the key type
@@ -51,11 +51,11 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 	s := &Signer{
 		kms:         kmssvc,
 		keyID:       keyID,
-		keyMetadata: ki.KeyMetadata,
+		targetKeyID: *ki.KeyMetadata.KeyId,
 		public:      pub,
 	}
 
-	if err := s.setSigningHashes(ki.KeyMetadata); err != nil {
+	if err := s.setSigningHashes(ki.KeyMetadata.SigningAlgorithms); err != nil {
 		return nil, err
 	}
 
@@ -64,7 +64,7 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 
 // KeyID returns the resource ID of the AWS KMS key.
 func (s *Signer) KeyID() string {
-	return *s.keyMetadata.KeyId
+	return s.targetKeyID
 }
 
 // Public returns the public key corresponding to the opaque,
@@ -110,10 +110,10 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) (signa
 	return sresp.Signature, nil
 }
 
-func (s *Signer) setSigningHashes(meta *kms.KeyMetadata) error {
+func (s *Signer) setSigningHashes(algorithms []*string) error {
 	var ecdsa, pss, pkcs15 = make(map[crypto.Hash]string), make(map[crypto.Hash]string), make(map[crypto.Hash]string)
 
-	for _, a := range meta.SigningAlgorithms {
+	for _, a := range algorithms {
 		switch *a {
 		case kms.SigningAlgorithmSpecRsassaPssSha256:
 			pss[crypto.SHA256] = kms.SigningAlgorithmSpecRsassaPssSha256
