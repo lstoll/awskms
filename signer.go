@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/kms"
@@ -32,13 +33,6 @@ type Signer struct {
 // NewSigner will configure a new Signer using the given KMS client, bound to
 // the given key.
 func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Signer, error) {
-	ki, err := kmssvc.DescribeKeyWithContext(ctx, &kms.DescribeKeyInput{
-		KeyId: &keyID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to lookup key %s: %w", keyID, err)
-	}
-
 	pkresp, err := kmssvc.GetPublicKeyWithContext(ctx, &kms.GetPublicKeyInput{
 		KeyId: &keyID,
 	})
@@ -46,8 +40,8 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 		return nil, fmt.Errorf("failed to fetch public key for %s: %w", keyID, err)
 	}
 
-	if *ki.KeyMetadata.KeyUsage != kms.KeyUsageTypeSignVerify {
-		return nil, fmt.Errorf("key usage must be %s, not %s", kms.KeyUsageTypeSignVerify, *ki.KeyMetadata.KeyUsage)
+	if *pkresp.KeyUsage != kms.KeyUsageTypeSignVerify {
+		return nil, fmt.Errorf("key usage must be %s, not %s", kms.KeyUsageTypeSignVerify, *pkresp.KeyUsage)
 	}
 
 	pub, err := parsePublicKey(pkresp.PublicKey)
@@ -55,18 +49,37 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 		return nil, err
 	}
 
+	targetKeyID, err := extractKeyID(*pkresp.KeyId)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Signer{
 		kms:         kmssvc,
 		keyID:       keyID,
-		targetKeyID: *ki.KeyMetadata.KeyId,
+		targetKeyID: targetKeyID,
 		public:      pub,
 	}
 
-	if err := s.setSigningHashes(ki.KeyMetadata.SigningAlgorithms); err != nil {
+	if err := s.setSigningHashes(pkresp.SigningAlgorithms); err != nil {
 		return nil, err
 	}
 
 	return s, nil
+}
+
+func extractKeyID(arn string) (string, error) {
+	arnSegments := strings.Split(arn, ":")
+	if len(arnSegments) != 6 {
+		return "", fmt.Errorf("unexpected number of ARN segments: %s", arn)
+	}
+
+	targetKeyID := arnSegments[5]
+	if !strings.HasPrefix(targetKeyID, "key/") {
+		return "", fmt.Errorf("unexpected key ID format: %s", targetKeyID)
+	}
+
+	return targetKeyID[4:], nil
 }
 
 // KeyID returns the resource ID of the AWS KMS key.
