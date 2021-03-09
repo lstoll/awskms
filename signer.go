@@ -39,11 +39,18 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 		return nil, fmt.Errorf("failed to lookup key %s: %w", keyID, err)
 	}
 
+	pkresp, err := kmssvc.GetPublicKeyWithContext(ctx, &kms.GetPublicKeyInput{
+		KeyId: &keyID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch public key for %s: %w", keyID, err)
+	}
+
 	if *ki.KeyMetadata.KeyUsage != kms.KeyUsageTypeSignVerify {
 		return nil, fmt.Errorf("key usage must be %s, not %s", kms.KeyUsageTypeSignVerify, *ki.KeyMetadata.KeyUsage)
 	}
 
-	pub, err := getPublicKey(ctx, kmssvc, keyID)
+	pub, err := parsePublicKey(pkresp.PublicKey)
 	if err != nil {
 		return nil, err
 	}
