@@ -76,3 +76,16 @@ func TestSignerE2E(t *testing.T) {
 		t.Fatalf("error verifying message with public key: %v", err)
 	}
 }
+
+func TestExtractKeyID(t *testing.T) {
+	arn := "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+	keyID, err := extractKeyID(arn)
+	if err != nil {
+		t.Fatalf("error extracting key ID: %v", err)
+	}
+
+	if got, want := keyID, "1234abcd-12ab-34cd-56ef-1234567890ab"; got != want {
+		t.Fatalf("got: %s, want: %s", got, want)
+	}
+}

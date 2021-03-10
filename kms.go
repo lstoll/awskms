@@ -1,26 +1,15 @@
 package awskms
 
 import (
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
-
-	"github.com/aws/aws-sdk-go/service/kms"
-	"github.com/aws/aws-sdk-go/service/kms/kmsiface"
 )
 
-func getPublicKey(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (crypto.PublicKey, error) {
-	pkresp, err := kmssvc.GetPublicKeyWithContext(ctx, &kms.GetPublicKeyInput{
-		KeyId: &keyID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch public key for %s: %w", keyID, err)
-	}
-
-	pubk, err := x509.ParsePKIXPublicKey(pkresp.PublicKey)
+func parsePublicKey(publicKey []byte) (crypto.PublicKey, error) {
+	pubk, err := x509.ParsePKIXPublicKey(publicKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse public key: %w", err)
 	}
