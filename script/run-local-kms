@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec docker run -p 8087:8080 -v "$(pwd)/testdata/seed.yaml:/init/seed.yaml" nsmithuk/local-kms:3.11.7
