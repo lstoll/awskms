@@ -5,16 +5,41 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+
+    services:
+      local-kms:
+        image: nsmithuk/local-kms:3.11.7
+        volumes:
+        # for some reason only testdata works here - if it's a subdir or the
+        # file, it'll fail the checkout because it can't be used. So just roll
+        # with this for now.
+        - ${{ github.workspace }}/testdata/:/init/
+        ports:
+        - 8087:8080
+
     steps:
 
-    - name: Set up Go 1.13
-      uses: actions/setup-go@v1
+    - name: Set up latest Go
+      uses: actions/setup-go@v4
       with:
-        go-version: 1.13
-      id: go
+        go-version: stable
 
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v1
+    - name: Check out code
+      uses: actions/checkout@v4
 
-    - name: Make
-      run: make
+    - name: Restart local-kms
+      # Restart local-kms after volumes have been checked out
+      # https://github.com/orgs/community/discussions/42127
+      uses: docker://docker
+      with:
+        args: docker restart "${{ job.services.local-kms.id }}"
+
+    - name: Go test
+      run: go test -v ./...
+      env:
+        TEST_LOCAL_KMS: "1"
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest

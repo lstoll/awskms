@@ -3,77 +3,143 @@ package awskms
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"flag"
 	"testing"
 	"time"
-
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/kms"
 )
 
-var (
-	signingKeyID string
-)
-
-func init() {
-	flag.StringVar(&signingKeyID, "signing-key-id", "", "KMS key ID to run tests against (RSA)")
-}
-
-func TestSignerE2E(t *testing.T) {
-	if signingKeyID == "" {
-		t.Skip("-signing-key-id flag not set")
-	}
+func TestSignerRSA(t *testing.T) {
+	client, aliases := testKMSClient(t)
 
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	sess := session.Must(session.NewSession())
-	kmscli := kms.New(sess)
-
-	s, err := NewSigner(ctx, kmscli, signingKeyID)
+	signer, err := NewSigner(ctx, client, aliases.RSASignVerify)
 	if err != nil {
 		t.Fatalf("failed to set up signer: %v", err)
+	}
+
+	pubKey, ok := signer.Public().(*rsa.PublicKey)
+	if !ok {
+		t.Fatalf("public key is not RSA key, it is a %T", signer.Public())
 	}
 
 	message := []byte(`hello this is a message`)
 	hash := sha256.Sum256(message)
 
-	t.Log("PKCS1 v1.5")
+	for _, tc := range []struct {
+		Name    string
+		Options crypto.SignerOpts
+		Verify  func(pub *rsa.PublicKey, sig []byte) error
+	}{
+		{
+			Name:    "RSA PKCS1 v1.5, unwrapped options",
+			Options: crypto.SHA256,
+			Verify: func(pub *rsa.PublicKey, sig []byte) error {
+				return rsa.VerifyPKCS1v15(pub, crypto.SHA256, hash[:], sig)
+			},
+		},
+		{
+			Name: "RSA PKCS1 v1.5, wrapped options",
+			Options: &SignerOpts{
+				Context: ctx,
+				Options: crypto.SHA256,
+			},
+			Verify: func(pub *rsa.PublicKey, sig []byte) error {
+				return rsa.VerifyPKCS1v15(pub, crypto.SHA256, hash[:], sig)
+			},
+		},
+		{
+			Name: "RSA PSS, unwrapped options",
+			Options: &rsa.PSSOptions{
+				Hash: crypto.SHA256,
+			},
+			Verify: func(pub *rsa.PublicKey, sig []byte) error {
+				return rsa.VerifyPSS(pub, crypto.SHA256, hash[:], sig, &rsa.PSSOptions{
+					Hash: crypto.SHA256,
+				})
+			},
+		},
+		{
+			Name: "RSA PSS, wrapped options",
+			Options: &SignerOpts{
+				Context: ctx,
+				Options: &rsa.PSSOptions{
+					Hash: crypto.SHA256,
+				},
+			},
+			Verify: func(pub *rsa.PublicKey, sig []byte) error {
+				return rsa.VerifyPSS(pub, crypto.SHA256, hash[:], sig, &rsa.PSSOptions{
+					Hash: crypto.SHA256,
+				})
+			},
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			sig, err := signer.Sign(rand.Reader, hash[:], tc.Options)
+			if err != nil {
+				t.Fatalf("error signing message: %v", err)
+			}
 
-	sig, err := s.Sign(rand.Reader, hash[:], crypto.SHA256)
+			if err := tc.Verify(pubKey, sig); err != nil {
+				t.Fatalf("error verifying message with public key: %v", err)
+
+			}
+		})
+	}
+}
+
+func TestSignerECDSA(t *testing.T) {
+	client, aliases := testKMSClient(t)
+
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	signer, err := NewSigner(ctx, client, aliases.ECSignVerify)
 	if err != nil {
-		t.Fatalf("error signing message: %v", err)
+		t.Fatalf("failed to set up signer: %v", err)
 	}
 
-	rsaPub, ok := s.Public().(*rsa.PublicKey)
+	pubKey, ok := signer.Public().(*ecdsa.PublicKey)
 	if !ok {
-		t.Fatalf("public key is not RSA key, it is a %T", s.Public())
+		t.Fatalf("public key is not ECDSA key, it is a %T", signer.Public())
 	}
 
-	if err := rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, hash[:], sig); err != nil {
-		t.Fatalf("error verifying message with public key: %v", err)
-	}
+	message := []byte(`hello this is a message`)
+	hash := sha256.Sum256(message)
 
-	t.Log("PSS")
+	for _, tc := range []struct {
+		Name    string
+		Options crypto.SignerOpts
+	}{
+		{
+			Name:    "ECDSA",
+			Options: crypto.SHA256,
+		},
+		{
+			Name: "ECDSA, wrapped options",
+			Options: &SignerOpts{
+				Context: ctx,
+				Options: crypto.SHA256,
+			},
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			sig, err := signer.Sign(rand.Reader, hash[:], tc.Options)
+			if err != nil {
+				t.Fatalf("error signing message: %v", err)
+			}
 
-	pssOpts := &rsa.PSSOptions{Hash: crypto.SHA256}
-
-	sig, err = s.Sign(rand.Reader, hash[:], pssOpts)
-	if err != nil {
-		t.Fatalf("error signing message: %v", err)
-	}
-
-	rsaPub, ok = s.Public().(*rsa.PublicKey)
-	if !ok {
-		t.Fatalf("public key is not RSA key, it is a %T", s.Public())
-	}
-
-	if err := rsa.VerifyPSS(rsaPub, crypto.SHA256, hash[:], sig, pssOpts); err != nil {
-		t.Fatalf("error verifying message with public key: %v", err)
+			valid := ecdsa.VerifyASN1(pubKey, hash[:], sig)
+			if !valid {
+				t.Fatal("signature is not valid")
+			}
+		})
 	}
 }
 

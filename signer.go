@@ -8,9 +8,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/kms"
-	"github.com/aws/aws-sdk-go/service/kms/kmsiface"
+	awsarn "github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 )
 
 var _ crypto.Signer = (*Signer)(nil)
@@ -18,30 +18,31 @@ var _ crypto.Signer = (*Signer)(nil)
 // Signer is a crypto.Signer that uses a AWS KMS backed key. It should be
 // initialized via NewSigner
 type Signer struct {
-	kms         kmsiface.KMSAPI
+	kms         KMSClient
 	keyID       string
 	targetKeyID string
 	public      crypto.PublicKey
 	// hashm maps the given crypto.hash to the alg for the KMS side. it will
 	// depend on the key type
-	hashm map[crypto.Hash]string
+	hashm map[crypto.Hash]kmstypes.SigningAlgorithmSpec
 	// psshashm explicitly maps hashes to their pss type. this is because we
 	// offer this as an opt-in for RSA keys
-	psshashm map[crypto.Hash]string
+	psshashm map[crypto.Hash]kmstypes.SigningAlgorithmSpec
 }
 
 // NewSigner will configure a new Signer using the given KMS client, bound to
-// the given key.
-func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Signer, error) {
-	pkresp, err := kmssvc.GetPublicKeyWithContext(ctx, &kms.GetPublicKeyInput{
+// the given key. This requires successful connectivity to the KMS service, to
+// retrieve the public key.
+func NewSigner(ctx context.Context, kmssvc KMSClient, keyID string) (*Signer, error) {
+	pkresp, err := kmssvc.GetPublicKey(ctx, &kms.GetPublicKeyInput{
 		KeyId: &keyID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch public key for %s: %w", keyID, err)
 	}
 
-	if *pkresp.KeyUsage != kms.KeyUsageTypeSignVerify {
-		return nil, fmt.Errorf("key usage must be %s, not %s", kms.KeyUsageTypeSignVerify, *pkresp.KeyUsage)
+	if pkresp.KeyUsage != kmstypes.KeyUsageTypeSignVerify {
+		return nil, fmt.Errorf("key usage must be %s, not %s", kmstypes.KeyUsageTypeSignVerify, pkresp.KeyUsage)
 	}
 
 	pub, err := parsePublicKey(pkresp.PublicKey)
@@ -69,17 +70,21 @@ func NewSigner(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Sign
 }
 
 func extractKeyID(arn string) (string, error) {
+	parn, err := awsarn.Parse(arn)
+	if err != nil {
+		return "", fmt.Errorf("parsing arn %s: %w", arn, err)
+	}
 	arnSegments := strings.Split(arn, ":")
 	if len(arnSegments) != 6 {
 		return "", fmt.Errorf("unexpected number of ARN segments: %s", arn)
 	}
 
-	targetKeyID := arnSegments[5]
+	targetKeyID := parn.Resource
 	if !strings.HasPrefix(targetKeyID, "key/") {
 		return "", fmt.Errorf("unexpected key ID format: %s", targetKeyID)
 	}
 
-	return targetKeyID[4:], nil
+	return strings.TrimPrefix(targetKeyID, "key/"), nil
 }
 
 // KeyID returns the resource ID of the AWS KMS key.
@@ -93,14 +98,45 @@ func (s *Signer) Public() crypto.PublicKey {
 	return s.public
 }
 
-// Sign signs digest with the private key. By default, for an RSA key a PKCS#1 v1.5 signature, and for an EC
-// key a DER-serialised, ASN.1 signature structure will be returned. If the passed options are a *rsa.PSSOptions, the RSA key will return a PSS signature.
+// SignerOpts implements crypto.SignerOpts for this Signer. It can wrap a Base
+// set of options, as per the Sign method docs.
+type SignerOpts struct {
+	// Context to use for remote calls.
+	Context context.Context
+	// Options to use to select algorithm etc. This can not be nil.
+	Options crypto.SignerOpts
+}
+
+// HashFunc is unused - we need this to implement crypto.SignerOpts, but we will
+// use either the Base's SignerOpts, or treat it like no opts were passed.
+func (s *SignerOpts) HashFunc() crypto.Hash {
+	panic("should not be called")
+}
+
+// Sign signs digest with the private key. By default, for an RSA key a PKCS#1
+// v1.5 signature, and for an EC key a DER-serialised, ASN.1 signature structure
+// will be returned. If the passed options are a *rsa.PSSOptions, the RSA key
+// will return a PSS signature. If a *SignerOpts is passed, the Base options
+// will be treated as if they were passed directly.
 //
 // Hash is required, as must correspond to a hash the KMS service supports.
 //
 // rand is unused.
 func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
-	var hm map[crypto.Hash]string
+	var (
+		ctx = context.Background()
+		hm  map[crypto.Hash]kmstypes.SigningAlgorithmSpec
+	)
+
+	if so, ok := opts.(*SignerOpts); ok {
+		if so.Context != nil {
+			ctx = so.Context
+		}
+		if so.Options == nil {
+			return nil, fmt.Errorf("the Options field on SignerOpts can not be nil")
+		}
+		opts = so.Options
+	}
 
 	switch opts.(type) {
 	case *rsa.PSSOptions:
@@ -117,10 +153,10 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) (signa
 		return nil, fmt.Errorf("hash %v not supported", opts.HashFunc())
 	}
 
-	sresp, err := s.kms.SignWithContext(context.Background(), &kms.SignInput{
+	sresp, err := s.kms.Sign(ctx, &kms.SignInput{
 		KeyId:            &s.keyID,
-		MessageType:      aws.String(kms.MessageTypeDigest),
-		SigningAlgorithm: &alg,
+		MessageType:      kmstypes.MessageTypeDigest,
+		SigningAlgorithm: alg,
 		Message:          digest,
 	})
 	if err != nil {
@@ -130,29 +166,29 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) (signa
 	return sresp.Signature, nil
 }
 
-func (s *Signer) setSigningHashes(algorithms []*string) error {
-	var ecdsa, pss, pkcs15 = make(map[crypto.Hash]string), make(map[crypto.Hash]string), make(map[crypto.Hash]string)
+func (s *Signer) setSigningHashes(algorithms []kmstypes.SigningAlgorithmSpec) error {
+	var ecdsa, pss, pkcs15 = make(map[crypto.Hash]kmstypes.SigningAlgorithmSpec), make(map[crypto.Hash]kmstypes.SigningAlgorithmSpec), make(map[crypto.Hash]kmstypes.SigningAlgorithmSpec)
 
 	for _, a := range algorithms {
-		switch *a {
-		case kms.SigningAlgorithmSpecRsassaPssSha256:
-			pss[crypto.SHA256] = kms.SigningAlgorithmSpecRsassaPssSha256
-		case kms.SigningAlgorithmSpecRsassaPssSha384:
-			pss[crypto.SHA384] = kms.SigningAlgorithmSpecRsassaPssSha384
-		case kms.SigningAlgorithmSpecRsassaPssSha512:
-			pss[crypto.SHA512] = kms.SigningAlgorithmSpecRsassaPssSha512
-		case kms.SigningAlgorithmSpecRsassaPkcs1V15Sha256:
-			pkcs15[crypto.SHA256] = kms.SigningAlgorithmSpecRsassaPkcs1V15Sha256
-		case kms.SigningAlgorithmSpecRsassaPkcs1V15Sha384:
-			pkcs15[crypto.SHA384] = kms.SigningAlgorithmSpecRsassaPkcs1V15Sha384
-		case kms.SigningAlgorithmSpecRsassaPkcs1V15Sha512:
-			pkcs15[crypto.SHA512] = kms.SigningAlgorithmSpecRsassaPkcs1V15Sha512
-		case kms.SigningAlgorithmSpecEcdsaSha256:
-			ecdsa[crypto.SHA256] = kms.SigningAlgorithmSpecEcdsaSha256
-		case kms.SigningAlgorithmSpecEcdsaSha384:
-			ecdsa[crypto.SHA384] = kms.SigningAlgorithmSpecEcdsaSha384
-		case kms.SigningAlgorithmSpecEcdsaSha512:
-			ecdsa[crypto.SHA512] = kms.SigningAlgorithmSpecEcdsaSha512
+		switch a {
+		case kmstypes.SigningAlgorithmSpecRsassaPssSha256:
+			pss[crypto.SHA256] = kmstypes.SigningAlgorithmSpecRsassaPssSha256
+		case kmstypes.SigningAlgorithmSpecRsassaPssSha384:
+			pss[crypto.SHA384] = kmstypes.SigningAlgorithmSpecRsassaPssSha384
+		case kmstypes.SigningAlgorithmSpecRsassaPssSha512:
+			pss[crypto.SHA512] = kmstypes.SigningAlgorithmSpecRsassaPssSha512
+		case kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha256:
+			pkcs15[crypto.SHA256] = kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha256
+		case kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha384:
+			pkcs15[crypto.SHA384] = kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha384
+		case kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha512:
+			pkcs15[crypto.SHA512] = kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha512
+		case kmstypes.SigningAlgorithmSpecEcdsaSha256:
+			ecdsa[crypto.SHA256] = kmstypes.SigningAlgorithmSpecEcdsaSha256
+		case kmstypes.SigningAlgorithmSpecEcdsaSha384:
+			ecdsa[crypto.SHA384] = kmstypes.SigningAlgorithmSpecEcdsaSha384
+		case kmstypes.SigningAlgorithmSpecEcdsaSha512:
+			ecdsa[crypto.SHA512] = kmstypes.SigningAlgorithmSpecEcdsaSha512
 		}
 	}
 

@@ -6,42 +6,33 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/aws/aws-sdk-go/service/kms"
-	"github.com/aws/aws-sdk-go/service/kms/kmsiface"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 )
 
 var _ crypto.Decrypter = (*Decrypter)(nil)
 
-// EncryptionAlgorithm https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html#KMS-Decrypt-request-EncryptionAlgorithm
-type EncryptionAlgorithm string
-
-const (
-	// EncryptionAlgorithmOaepSha256 = RSAES_OAEP_SHA_256 (https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html#KMS-Decrypt-request-EncryptionAlgorithm)
-	EncryptionAlgorithmOaepSha256 = kms.AlgorithmSpecRsaesOaepSha256
-	// EncryptionAlgorithmOaepSha1 = RSAES_OAEP_SHA_1 (https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html#KMS-Decrypt-request-EncryptionAlgorithm)
-	EncryptionAlgorithmOaepSha1 = kms.AlgorithmSpecRsaesOaepSha1
-)
-
 // Decrypter implents a crypto.Decrypter that uses a RSA key stored in AWS
 // It should be initialized via NewDecrypter
 type Decrypter struct {
-	kms    kmsiface.KMSAPI
+	kms    KMSClient
 	keyID  string
 	public crypto.PublicKey
 }
 
 // NewDecrypter will configure a new decrypter using the given KMS client, bound
-// to the given key.
-func NewDecrypter(ctx context.Context, kmssvc kmsiface.KMSAPI, keyID string) (*Decrypter, error) {
-	pkresp, err := kmssvc.GetPublicKeyWithContext(ctx, &kms.GetPublicKeyInput{
+// to the given key. This requires successful connectivity to the KMS service, to
+// retrieve the public key.
+func NewDecrypter(ctx context.Context, kmssvc KMSClient, keyID string) (*Decrypter, error) {
+	pkresp, err := kmssvc.GetPublicKey(ctx, &kms.GetPublicKeyInput{
 		KeyId: &keyID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch public key for %s: %w", keyID, err)
 	}
 
-	if *pkresp.KeyUsage != kms.KeyUsageTypeEncryptDecrypt {
-		return nil, fmt.Errorf("key usage must be %s, not %s", kms.KeyUsageTypeSignVerify, *pkresp.KeyUsage)
+	if pkresp.KeyUsage != kmstypes.KeyUsageTypeEncryptDecrypt {
+		return nil, fmt.Errorf("key usage must be %s, not %s", kmstypes.KeyUsageTypeSignVerify, pkresp.KeyUsage)
 	}
 
 	pub, err := parsePublicKey(pkresp.PublicKey)
@@ -64,37 +55,38 @@ func (d *Decrypter) Public() crypto.PublicKey {
 
 // DecrypterOpts implements crypto.DecrypterOpts for this Decrypter
 type DecrypterOpts struct {
+	// Context sets the context for remote calls.
+	Context context.Context
 	// EncryptionAlgorithm indicates the encryption algorithm that was used.
-	// If not set, defaults to EncryptionAlgorithmOaepSha256
-	EncryptionAlgorithm EncryptionAlgorithm
+	// If not set, defaults to types.EncryptionAlgorithmSpecRsaesOaepSha1
+	EncryptionAlgorithm kmstypes.EncryptionAlgorithmSpec
 }
 
-// Decrypt decrypts msg. If opts are nil, EncryptionAlgorithmOaepSha256 will be
+// Decrypt decrypts msg. A *DecrypterOpts can be passed to customize the
+// algorithm in use. If opts are nil, EncryptionAlgorithmOaepSha256 will be
 // used.
 func (d *Decrypter) Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpts) (plaintext []byte, err error) {
+	var (
+		ctx = context.Background()
+		alg = kmstypes.EncryptionAlgorithmSpecRsaesOaepSha1
+	)
 
-	var o DecrypterOpts
-
-	od, ok := opts.(*DecrypterOpts)
-	if !ok && opts != nil {
-		return nil, fmt.Errorf("passed options are of unknown type %T", opts)
-	}
-	if od != nil {
-		o = *od
-	}
-
-	var alg string = EncryptionAlgorithmOaepSha256
-	if o.EncryptionAlgorithm != "" {
-		alg = string(o.EncryptionAlgorithm)
+	if do, ok := opts.(*DecrypterOpts); ok {
+		if do.Context != nil {
+			ctx = do.Context
+		}
+		if do.EncryptionAlgorithm != "" {
+			alg = do.EncryptionAlgorithm
+		}
 	}
 
-	dresp, err := d.kms.DecryptWithContext(context.Background(), &kms.DecryptInput{
+	dresp, err := d.kms.Decrypt(ctx, &kms.DecryptInput{
 		KeyId:               &d.keyID,
 		CiphertextBlob:      msg,
-		EncryptionAlgorithm: &alg,
+		EncryptionAlgorithm: alg,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sign operation failed: %w", err)
+		return nil, fmt.Errorf("decrypt operation failed: %w", err)
 	}
 
 	return dresp.Plaintext, nil
