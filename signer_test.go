@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,7 +19,7 @@ func TestSignerRSA(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	signer, err := NewSigner(ctx, client, aliases.RSASignVerify)
+	signer, err := NewSigner(ctx, client, aliases.RSASignVerifyAlias)
 	if err != nil {
 		t.Fatalf("failed to set up signer: %v", err)
 	}
@@ -87,7 +88,6 @@ func TestSignerRSA(t *testing.T) {
 
 			if err := tc.Verify(pubKey, sig); err != nil {
 				t.Fatalf("error verifying message with public key: %v", err)
-
 			}
 		})
 	}
@@ -100,7 +100,7 @@ func TestSignerECDSA(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	signer, err := NewSigner(ctx, client, aliases.ECSignVerify)
+	signer, err := NewSigner(ctx, client, aliases.ECSignVerifyAlias)
 	if err != nil {
 		t.Fatalf("failed to set up signer: %v", err)
 	}
@@ -143,15 +143,25 @@ func TestSignerECDSA(t *testing.T) {
 	}
 }
 
-func TestExtractKeyID(t *testing.T) {
-	arn := "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+func TestLoadingSigningKey(t *testing.T) {
+	client, aliases := testKMSClient(t)
+	ctx := context.Background()
 
-	keyID, err := extractKeyID(arn)
-	if err != nil {
-		t.Fatalf("error extracting key ID: %v", err)
+	if _, err := NewSigner(ctx, client, aliases.RSAEncryptDecryptAlias); err == nil {
+		t.Error("error should have occurred when creating a signer with a encrypt/decrypt key")
 	}
 
-	if got, want := keyID, "1234abcd-12ab-34cd-56ef-1234567890ab"; got != want {
-		t.Fatalf("got: %s, want: %s", got, want)
+	signer, err := NewSigner(ctx, client, aliases.RSASignVerifyAlias)
+	if err != nil {
+		t.Errorf("unexpected error on a valid client creation: %v", err)
+	}
+
+	wantAlias := strings.TrimPrefix(aliases.RSASignVerifyAlias, "alias/")
+	if signer.KeyInfo().Alias != wantAlias {
+		t.Errorf("want key info alias %s, got: %s", wantAlias, signer.KeyInfo().Alias)
+	}
+
+	if signer.KeyInfo().ARN != aliases.RSASignVerifyARN {
+		t.Errorf("want key info arn %s, got: %s", aliases.RSASignVerifyARN, signer.KeyInfo().ARN)
 	}
 }
