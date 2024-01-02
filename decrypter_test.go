@@ -8,6 +8,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"hash"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestDecrypterRSA(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	decrypter, err := NewDecrypter(ctx, client, aliases.RSAEncryptDecrypt)
+	decrypter, err := NewDecrypter(ctx, client, aliases.RSAEncryptDecryptAlias)
 	if err != nil {
 		t.Fatalf("error creating decrypter: %v", err)
 	}
@@ -67,5 +68,28 @@ func TestDecrypterRSA(t *testing.T) {
 				t.Fatalf("got: %s, want: %s", string(plaintext), string(message))
 			}
 		})
+	}
+}
+
+func TestLoadingDecryptionKey(t *testing.T) {
+	client, aliases := testKMSClient(t)
+	ctx := context.Background()
+
+	if _, err := NewDecrypter(ctx, client, aliases.RSASignVerifyAlias); err == nil {
+		t.Error("error should have occurred when creating a signer with a sign/verify key")
+	}
+
+	signer, err := NewDecrypter(ctx, client, aliases.RSAEncryptDecryptAlias)
+	if err != nil {
+		t.Errorf("unexpected error on a valid client creation: %v", err)
+	}
+
+	wantAlias := strings.TrimPrefix(aliases.RSAEncryptDecryptAlias, "alias/")
+	if signer.KeyInfo().Alias != wantAlias {
+		t.Errorf("want key info alias %s, got: %s", wantAlias, signer.KeyInfo().Alias)
+	}
+
+	if signer.KeyInfo().ARN != aliases.RSAEncryptDecryptARN {
+		t.Errorf("want key info arn %s, got: %s", aliases.RSAEncryptDecryptARN, signer.KeyInfo().ARN)
 	}
 }

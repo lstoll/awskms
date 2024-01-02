@@ -6,9 +6,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"io"
-	"strings"
 
-	awsarn "github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 )
@@ -18,10 +16,9 @@ var _ crypto.Signer = (*Signer)(nil)
 // Signer is a crypto.Signer that uses a AWS KMS backed key. It should be
 // initialized via NewSigner
 type Signer struct {
-	kms         KMSClient
-	keyID       string
-	targetKeyID string
-	public      crypto.PublicKey
+	kms    KMSClient
+	key    KeyInfo
+	public crypto.PublicKey
 	// hashm maps the given crypto.hash to the alg for the KMS side. it will
 	// depend on the key type
 	hashm map[crypto.Hash]kmstypes.SigningAlgorithmSpec
@@ -45,21 +42,15 @@ func NewSigner(ctx context.Context, kmssvc KMSClient, keyID string) (*Signer, er
 		return nil, fmt.Errorf("key usage must be %s, not %s", kmstypes.KeyUsageTypeSignVerify, pkresp.KeyUsage)
 	}
 
-	pub, err := parsePublicKey(pkresp.PublicKey)
-	if err != nil {
-		return nil, err
-	}
-
-	targetKeyID, err := extractKeyID(*pkresp.KeyId)
+	pub, info, err := parsePubKeyResp(keyID, pkresp)
 	if err != nil {
 		return nil, err
 	}
 
 	s := &Signer{
-		kms:         kmssvc,
-		keyID:       keyID,
-		targetKeyID: targetKeyID,
-		public:      pub,
+		kms:    kmssvc,
+		key:    info,
+		public: pub,
 	}
 
 	if err := s.setSigningHashes(pkresp.SigningAlgorithms); err != nil {
@@ -69,27 +60,9 @@ func NewSigner(ctx context.Context, kmssvc KMSClient, keyID string) (*Signer, er
 	return s, nil
 }
 
-func extractKeyID(arn string) (string, error) {
-	parn, err := awsarn.Parse(arn)
-	if err != nil {
-		return "", fmt.Errorf("parsing arn %s: %w", arn, err)
-	}
-	arnSegments := strings.Split(arn, ":")
-	if len(arnSegments) != 6 {
-		return "", fmt.Errorf("unexpected number of ARN segments: %s", arn)
-	}
-
-	targetKeyID := parn.Resource
-	if !strings.HasPrefix(targetKeyID, "key/") {
-		return "", fmt.Errorf("unexpected key ID format: %s", targetKeyID)
-	}
-
-	return strings.TrimPrefix(targetKeyID, "key/"), nil
-}
-
-// KeyID returns the resource ID of the AWS KMS key.
-func (s *Signer) KeyID() string {
-	return s.targetKeyID
+// KeyInfo returns information about the KMS key in use.
+func (s *Signer) KeyInfo() KeyInfo {
+	return s.key
 }
 
 // Public returns the public key corresponding to the opaque,
@@ -154,7 +127,7 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) (signa
 	}
 
 	sresp, err := s.kms.Sign(ctx, &kms.SignInput{
-		KeyId:            &s.keyID,
+		KeyId:            &s.key.ARN,
 		MessageType:      kmstypes.MessageTypeDigest,
 		SigningAlgorithm: alg,
 		Message:          digest,
@@ -209,5 +182,5 @@ func (s *Signer) setSigningHashes(algorithms []kmstypes.SigningAlgorithmSpec) er
 		return nil
 	}
 
-	return fmt.Errorf("no valid signing hashes found for key %s", s.keyID)
+	return fmt.Errorf("no valid signing hashes found for key %s", s.key.ARN)
 }

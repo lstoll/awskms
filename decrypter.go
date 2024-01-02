@@ -16,7 +16,7 @@ var _ crypto.Decrypter = (*Decrypter)(nil)
 // It should be initialized via NewDecrypter
 type Decrypter struct {
 	kms    KMSClient
-	keyID  string
+	key    KeyInfo
 	public crypto.PublicKey
 }
 
@@ -35,16 +35,21 @@ func NewDecrypter(ctx context.Context, kmssvc KMSClient, keyID string) (*Decrypt
 		return nil, fmt.Errorf("key usage must be %s, not %s", kmstypes.KeyUsageTypeSignVerify, pkresp.KeyUsage)
 	}
 
-	pub, err := parsePublicKey(pkresp.PublicKey)
+	pub, info, err := parsePubKeyResp(keyID, pkresp)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Decrypter{
 		kms:    kmssvc,
-		keyID:  keyID,
+		key:    info,
 		public: pub,
 	}, nil
+}
+
+// KeyInfo returns information about the KMS key in use.
+func (d *Decrypter) KeyInfo() KeyInfo {
+	return d.key
 }
 
 // Public returns the public key corresponding to the opaque,
@@ -81,7 +86,7 @@ func (d *Decrypter) Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpt
 	}
 
 	dresp, err := d.kms.Decrypt(ctx, &kms.DecryptInput{
-		KeyId:               &d.keyID,
+		KeyId:               &d.key.ARN,
 		CiphertextBlob:      msg,
 		EncryptionAlgorithm: alg,
 	})
